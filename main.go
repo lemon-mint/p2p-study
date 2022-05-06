@@ -1,5 +1,7 @@
 package main
 
-func main() {
+import "github.com/lemon-mint/godotenv"
 
+func main() {
+	godotenv.Load()
 }
