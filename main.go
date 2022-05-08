@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"io/ioutil"
 	"log"
@@ -73,22 +74,16 @@ func main() {
 	myid := getNodeID()
 	log.Println("My ID:", myid)
 
-	me := Peer{
-		ID:    myid,
-		Addrs: myaddrs,
+	n := Node{
+		NodeID: myid,
+		Addrs:  myaddrs,
 	}
+	go func() {
+		err := n.StartServer(ln)
+		panic(err)
+	}()
 
-	log.Println("Me:", me)
-
-	r := httprouter.New()
-
-	r.GET("/", func(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
-		w.Write([]byte("Hello, world!"))
-	})
-
-	go http.Serve(ln, r)
-
-	resp, err := client.Get("http://" + Addrs2String(myaddrs) + "/")
+	resp, err := client.Get("http://" + Addrs2String(myaddrs) + "/id")
 	if err != nil {
 		panic(err)
 	}
@@ -157,6 +152,29 @@ func distance(a, b uint64) uint64 {
 type Peer struct {
 	ID    uint64
 	Addrs []types.Address
+}
+
+func (p Peer) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ID    uint64
+		Addrs string
+	}{
+		ID:    p.ID,
+		Addrs: Addrs2String(p.Addrs),
+	})
+}
+
+func (p Peer) UnmarshalJSON(b []byte) error {
+	var s struct {
+		ID    uint64
+		Addrs string
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	p.ID = s.ID
+	p.Addrs = String2Addrs(s.Addrs)
+	return nil
 }
 
 func MyAddresses() ([]types.Address, error) {
@@ -258,6 +276,7 @@ func Dial(addrs []types.Address) (net.Conn, error) {
 
 type Node struct {
 	NodeID uint64
+	Addrs  []types.Address
 
 	// Peers is the list of peers
 	Peers []Peer
@@ -279,7 +298,67 @@ func (n *Node) Bootstrap(peers []Peer) {
 	defer n.mu.Unlock()
 
 	n.Peers = append(n.Peers, peers...)
+
+	// Add self to the list of peers
+	n.Peers = append(n.Peers, Peer{
+		ID:    n.NodeID,
+		Addrs: n.Addrs,
+	})
+
+	// Get the list of peers to bootstrap from
+	var bootstrapPeers []Peer
+	var addrs []Peer
+	for _, peer := range n.Peers {
+		if peer.ID != n.NodeID {
+			resp, err := http.Get("http://" + Addrs2String(peer.Addrs) + "/peers")
+			if err != nil {
+				continue
+			}
+			defer resp.Body.Close()
+			err = json.NewDecoder(resp.Body).Decode(&addrs)
+			if err != nil {
+				continue
+			}
+			bootstrapPeers = append(bootstrapPeers, addrs...)
+			addrs = addrs[:0]
+		}
+	}
+	n.Peers = append(n.Peers, bootstrapPeers...)
 	sort.Slice(n.Peers, func(i, j int) bool {
 		return n.Peers[i].ID < n.Peers[j].ID
 	})
+
+	// Remove duplicates
+	var uniquePeers []Peer
+	var seenPeers = make(map[uint64]bool)
+	for _, peer := range n.Peers {
+		if _, ok := seenPeers[peer.ID]; !ok {
+			seenPeers[peer.ID] = true
+			uniquePeers = append(uniquePeers, peer)
+		}
+	}
+	n.Peers = uniquePeers
+}
+
+func (n *Node) StartServer(ln net.Listener) error {
+	r := httprouter.New()
+
+	r.GET("/peers", func(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
+		n.mu.RLock()
+		defer n.mu.RUnlock()
+
+		err := json.NewEncoder(w).Encode(n.Peers)
+		if err != nil {
+			log.Println(err)
+		}
+	})
+
+	r.GET("/id", func(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
+		n.mu.RLock()
+		defer n.mu.RUnlock()
+
+		w.Write([]byte(strconv.FormatUint(n.NodeID, 10)))
+	})
+
+	return http.Serve(ln, r)
 }
