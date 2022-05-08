@@ -33,6 +33,10 @@ func getNodeID() uint64 {
 	return id
 }
 
+func distance(a, b uint64) uint64 {
+	return a ^ b
+}
+
 type Node struct {
 	NodeID uint64
 }
