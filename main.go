@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"io"
+	"io/ioutil"
 	"log"
 	mrand "math/rand"
 	"net"
@@ -13,9 +16,26 @@ import (
 	"sync"
 	"time"
 
+	"github.com/julienschmidt/httprouter"
 	"github.com/lemon-mint/godotenv"
 	"github.com/lemon-mint/p2p-study/types"
 )
+
+var t *http.Transport = &http.Transport{
+	DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
+		addrs := String2Addrs(addr)
+		if len(addrs) > 0 {
+			conn, err := Dial(addrs)
+			if err != nil {
+				return nil, err
+			}
+			return conn, nil
+		}
+		return net.DialTimeout(network, addr, time.Second*5)
+	},
+}
+
+var client = &http.Client{Transport: t}
 
 func main() {
 	godotenv.Load()
@@ -48,9 +68,7 @@ func main() {
 		)
 	}
 
-	for i := range myaddrs {
-		log.Println("Discovered address:", myaddrs[i].String())
-	}
+	log.Println("My addresses:", Addrs2String(myaddrs))
 
 	myid := getNodeID()
 	log.Println("My ID:", myid)
@@ -61,9 +79,57 @@ func main() {
 	}
 
 	log.Println("Me:", me)
+
+	r := httprouter.New()
+
+	r.GET("/", func(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
+		w.Write([]byte("Hello, world!"))
+	})
+
+	go http.Serve(ln, r)
+
+	resp, err := client.Get("http://" + Addrs2String(myaddrs) + "/")
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	log.Println("Response:", string(body))
+
 }
 
-type Address struct {
+func Addrs2String(addrs []types.Address) string {
+	var sb strings.Builder
+	for i, addr := range addrs {
+		if i != 0 {
+			sb.WriteString(".")
+		}
+		strAddr := base64.RawURLEncoding.EncodeToString(addr)
+		sb.WriteString(strAddr)
+	}
+	return sb.String()
+}
+
+func String2Addrs(s string) []types.Address {
+	var addrs []types.Address
+	for _, addr := range strings.Split(s, ".") {
+		if addr == "" {
+			continue
+		}
+		byteAddr, err := base64.RawURLEncoding.DecodeString(addr)
+		if err != nil {
+			continue
+		}
+		a := types.Address(byteAddr)
+		if !a.Vstruct_Validate() {
+			continue
+		}
+		addrs = append(addrs, a)
+	}
+	return addrs
 }
 
 func getNodeID() uint64 {
@@ -170,8 +236,16 @@ func Dial(addrs []types.Address) (net.Conn, error) {
 	var err error
 	var conn net.Conn
 	for _, addr := range addrs {
+		log.Println("Dialing:", addr)
 		if addr.Protocol() == types.Protocol_TCP {
-			conn, err = net.DialTimeout(addr.Protocol().String(), addr.String(), time.Second*1)
+			conn, err = net.DialTimeout("tcp", addr.Host()+":"+strconv.Itoa(int(addr.Port())), time.Second*1)
+			if err != nil {
+				continue
+			}
+			return conn, nil
+		}
+		if addr.Protocol() == types.Protocol_UDP {
+			conn, err = net.DialTimeout("udp", addr.Host()+":"+strconv.Itoa(int(addr.Port())), time.Second*1)
 			if err != nil {
 				continue
 			}
