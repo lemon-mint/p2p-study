@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -111,10 +112,11 @@ func main() {
 	fl.Unlock()
 
 	n.Bootstrap(peers)
+	n.Broadcast()
 
 	go func() {
 		err := n.StartServer(ln)
-		panic(err)
+		log.Println(err)
 	}()
 
 	resp, err := client.Get("http://" + Addrs2String(myaddrs) + "/id")
@@ -131,6 +133,40 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 	<-sigChan
+
+	// Remove myself from peers
+	peers = peers[:0]
+	fl.Lock()
+	f, err = os.OpenFile("peers.json", os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		panic(err)
+	}
+
+	err = json.NewDecoder(f).Decode(&peers)
+	if err != nil {
+		if err == io.EOF {
+			f.WriteString("[]")
+		}
+		panic(err)
+	}
+
+	for i := range peers {
+		if peers[i].ID == myid {
+			peers = append(peers[:i], peers[i+1:]...)
+			break
+		}
+	}
+	f.Close()
+
+	f, err = os.Create("peers.json")
+
+	b, err = json.MarshalIndent(peers, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	f.Write(b)
+	f.Close()
+	fl.Unlock()
 }
 
 func Addrs2String(addrs []types.Address) string {
@@ -377,6 +413,9 @@ func (n *Node) Bootstrap(peers []Peer) {
 			}
 		}(peer)
 	}
+
+	wg.Wait()
+
 	n.Peers = append(n.Peers, bootstrapPeers...)
 	sort.Slice(n.Peers, func(i, j int) bool {
 		return n.Peers[i].ID < n.Peers[j].ID
@@ -392,6 +431,25 @@ func (n *Node) Bootstrap(peers []Peer) {
 		}
 	}
 	n.Peers = uniquePeers
+}
+
+func (n *Node) Broadcast() {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	// Register self with the list of peers
+	for _, peer := range n.Peers {
+		if peer.ID != n.NodeID {
+			go func(peer Peer) {
+				resp, err := client.Post("http://"+Addrs2String(peer.Addrs)+"/register", "application/json", bytes.NewBuffer([]byte(n.MeJSON())))
+				if err != nil {
+					return
+				}
+				defer resp.Body.Close()
+
+				log.Println("Registered Peer:", len(n.Peers))
+			}(peer)
+		}
+	}
 }
 
 func (n *Node) StartServer(ln net.Listener) error {
@@ -412,6 +470,18 @@ func (n *Node) StartServer(ln net.Listener) error {
 		defer n.mu.RUnlock()
 
 		w.Write([]byte(strconv.FormatUint(n.NodeID, 10)))
+	})
+
+	r.POST("/register", func(_ http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+		var p Peer
+		err := json.NewDecoder(r.Body).Decode(&p)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		n.AddPeer(p)
+
+		log.Println("Registered Peer:", len(n.Peers))
 	})
 
 	return http.Serve(ln, r)
