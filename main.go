@@ -2,9 +2,13 @@ package main
 
 import (
 	"crypto/rand"
+	"io"
 	"log"
 	mrand "math/rand"
 	"net"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lemon-mint/godotenv"
@@ -17,6 +21,29 @@ func main() {
 	myaddrs, err := MyAddresses()
 	if err != nil {
 		panic(err)
+	}
+
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		panic(err)
+	}
+	defer ln.Close()
+
+	lnip := ln.Addr().String()
+	portpos := strings.LastIndex(lnip, ":")
+	portStr := lnip[portpos+1:]
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		panic(err)
+	}
+
+	for i := range myaddrs {
+		myaddrs[i] = types.New_Address(
+			myaddrs[i].Type(),
+			myaddrs[i].Protocol(),
+			uint16(port),
+			myaddrs[i].Host(),
+		)
 	}
 
 	for i := range myaddrs {
@@ -98,6 +125,29 @@ func MyAddresses() ([]types.Address, error) {
 			))
 		} else {
 			continue
+		}
+	}
+
+	// Get Cloudflare IP
+	resp, err := http.Get("https://cloudflare.com/cdn-cgi/trace")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	cfip := godotenv.Parse(string(body))["ip"]
+	if cfip != "" {
+		if _, ok := addrSet[cfip]; !ok {
+			addrSet[cfip] = true
+			addrs = append(addrs, types.New_Address(
+				types.AddressType_IPv4,
+				types.Protocol_TCP,
+				0,
+				cfip,
+			))
 		}
 	}
 
