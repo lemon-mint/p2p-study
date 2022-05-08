@@ -11,12 +11,15 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/julienschmidt/httprouter"
 	"github.com/lemon-mint/godotenv"
 	"github.com/lemon-mint/p2p-study/types"
@@ -69,15 +72,46 @@ func main() {
 		)
 	}
 
-	log.Println("My addresses:", Addrs2String(myaddrs))
-
 	myid := getNodeID()
-	log.Println("My ID:", myid)
 
 	n := Node{
 		NodeID: myid,
 		Addrs:  myaddrs,
 	}
+	log.Println(n.MeJSON())
+
+	// File Discovery
+	var peers []Peer
+	fl := flock.New("peers.json.lock")
+	fl.Lock()
+	f, err := os.OpenFile("peers.json", os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		panic(err)
+	}
+
+	err = json.NewDecoder(f).Decode(&peers)
+	if err != nil {
+		if err == io.EOF {
+			f.WriteString("[]")
+		}
+		panic(err)
+	}
+
+	peers = append(peers, n.Me())
+	f.Close()
+
+	f, err = os.Create("peers.json")
+
+	b, err := json.MarshalIndent(peers, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	f.Write(b)
+	f.Close()
+	fl.Unlock()
+
+	n.Bootstrap(peers)
+
 	go func() {
 		err := n.StartServer(ln)
 		panic(err)
@@ -94,6 +128,9 @@ func main() {
 	}
 	log.Println("Response:", string(body))
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	<-sigChan
 }
 
 func Addrs2String(addrs []types.Address) string {
@@ -164,7 +201,7 @@ func (p Peer) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (p Peer) UnmarshalJSON(b []byte) error {
+func (p *Peer) UnmarshalJSON(b []byte) error {
 	var s struct {
 		ID    uint64
 		Addrs string
@@ -284,6 +321,18 @@ type Node struct {
 	mu sync.RWMutex
 }
 
+func (n *Node) Me() Peer {
+	return Peer{
+		ID:    n.NodeID,
+		Addrs: n.Addrs,
+	}
+}
+
+func (n *Node) MeJSON() string {
+	b, _ := json.Marshal(n.Me())
+	return string(b)
+}
+
 func (n *Node) AddPeer(p Peer) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -308,20 +357,25 @@ func (n *Node) Bootstrap(peers []Peer) {
 	// Get the list of peers to bootstrap from
 	var bootstrapPeers []Peer
 	var addrs []Peer
+	var wg sync.WaitGroup
 	for _, peer := range n.Peers {
-		if peer.ID != n.NodeID {
-			resp, err := http.Get("http://" + Addrs2String(peer.Addrs) + "/peers")
-			if err != nil {
-				continue
+		wg.Add(1)
+		go func(peer Peer) {
+			defer wg.Done()
+			if peer.ID != n.NodeID {
+				resp, err := client.Get("http://" + Addrs2String(peer.Addrs) + "/peers")
+				if err != nil {
+					return
+				}
+				defer resp.Body.Close()
+				err = json.NewDecoder(resp.Body).Decode(&addrs)
+				if err != nil {
+					return
+				}
+				bootstrapPeers = append(bootstrapPeers, addrs...)
+				addrs = addrs[:0]
 			}
-			defer resp.Body.Close()
-			err = json.NewDecoder(resp.Body).Decode(&addrs)
-			if err != nil {
-				continue
-			}
-			bootstrapPeers = append(bootstrapPeers, addrs...)
-			addrs = addrs[:0]
-		}
+		}(peer)
 	}
 	n.Peers = append(n.Peers, bootstrapPeers...)
 	sort.Slice(n.Peers, func(i, j int) bool {
