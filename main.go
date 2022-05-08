@@ -7,8 +7,10 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lemon-mint/godotenv"
@@ -49,6 +51,16 @@ func main() {
 	for i := range myaddrs {
 		log.Println("Discovered address:", myaddrs[i].String())
 	}
+
+	myid := getNodeID()
+	log.Println("My ID:", myid)
+
+	me := Peer{
+		ID:    myid,
+		Addrs: myaddrs,
+	}
+
+	log.Println("Me:", me)
 }
 
 type Address struct {
@@ -154,9 +166,46 @@ func MyAddresses() ([]types.Address, error) {
 	return addrs, nil
 }
 
+func Dial(addrs []types.Address) (net.Conn, error) {
+	var err error
+	var conn net.Conn
+	for _, addr := range addrs {
+		if addr.Protocol() == types.Protocol_TCP {
+			conn, err = net.DialTimeout(addr.Protocol().String(), addr.String(), time.Second*1)
+			if err != nil {
+				continue
+			}
+			return conn, nil
+		}
+	}
+
+	return nil, err
+}
+
 type Node struct {
 	NodeID uint64
 
 	// Peers is the list of peers
 	Peers []Peer
+
+	mu sync.RWMutex
+}
+
+func (n *Node) AddPeer(p Peer) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.Peers = append(n.Peers, p)
+	sort.Slice(n.Peers, func(i, j int) bool {
+		return n.Peers[i].ID < n.Peers[j].ID
+	})
+}
+
+func (n *Node) Bootstrap(peers []Peer) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.Peers = append(n.Peers, peers...)
+	sort.Slice(n.Peers, func(i, j int) bool {
+		return n.Peers[i].ID < n.Peers[j].ID
+	})
 }
