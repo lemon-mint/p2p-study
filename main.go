@@ -12,6 +12,9 @@ func main() {
 	godotenv.Load()
 }
 
+type Address struct {
+}
+
 func getNodeID() uint64 {
 	mrand.Seed(int64(time.Now().Nanosecond()))
 	var b [4096]byte

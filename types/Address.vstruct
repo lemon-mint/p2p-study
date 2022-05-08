@@ -1,0 +1,19 @@
+enum AddressType {
+    IPv4, IPv6,
+    DNS_A, DNS_AAAA, DNS_SRV
+}
+
+enum Protocol {
+    TCP, UDP,
+    TLS, DTLS,
+    WS, WSS,
+    QUIC
+}
+
+struct Address {
+    AddressType type;
+    Protocol protocol;
+
+    uint16 port;
+    string host;    
+}

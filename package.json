@@ -1,0 +1,24 @@
+{
+  "dependencies": {
+    "vstruct": "1.4.0"
+  },
+  "name": "p2p-study",
+  "description": "",
+  "version": "1.0.0",
+  "main": "index.js",
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lemon-mint/p2p-study.git"
+  },
+  "keywords": [],
+  "author": "lemon-mint",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/lemon-mint/p2p-study/issues"
+  },
+  "homepage": "https://github.com/lemon-mint/p2p-study#readme"
+}
